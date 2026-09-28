@@ -107,10 +107,14 @@ def set_config_value(key: str, value: str) -> None:
     settings_file = config_dir / "settings.conf"
     with open(settings_file, "r+") as f:
         config = f.readlines()
+        found = False
         for i, line in enumerate(config):
-            if line.startswith(key):
+            if line.startswith(f"{key}=") or line.startswith(f"#{key}="):
                 config[i] = f"{key}={value}\n"
+                found = True
                 break
+        if not found:
+            config.append(f"{key}={value}\n")
         f.seek(0)
         f.writelines(config)
         f.truncate()
@@ -300,6 +304,21 @@ def version_11() -> None:
         f.write("\nCHECK_TIKTOK_AVAILABILITY=true\n")
 
 
+def version_12() -> None:
+    """Обновляет конфигурацию до версии 12 (настройки топиков Telegram)."""
+    config_dir = get_config_dir()
+    settings_file = config_dir / "settings.conf"
+    with open(settings_file, "a") as f:
+        f.write(
+            "\n# Режим сохранения видео в топики Telegram (экономия диска)\n"
+            "TELEGRAM_TOPICS_MODE=false\n"
+            "TELEGRAM_TOPIC_LIKES_ID=\n"
+            "TELEGRAM_TOPIC_FAVORITES_ID=\n"
+            "TELEGRAM_TOPIC_DELETED_ID=\n"
+            "DELETE_LOCAL_AFTER_UPLOAD=true\n"
+        )
+
+
 VERSIONS = [
     None,
     version_2,
@@ -312,6 +331,7 @@ VERSIONS = [
     version_9,
     version_10,
     version_11,
+    version_12,
 ]
 
 
@@ -335,6 +355,21 @@ DOWNLOAD_SAVED_VIDEOS: bool = os.getenv("DOWNLOAD_SAVED_VIDEOS", "false").lower(
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 TELEGRAM_MAX_VIDEO_SIZE = 1024 * 1024 * 50 - 2048
+
+# Режим сохранения видео в топики Telegram (экономия диска)
+TELEGRAM_TOPICS_MODE: bool = os.getenv("TELEGRAM_TOPICS_MODE", "false").lower() == "true"
+TELEGRAM_TOPIC_LIKES_ID: int | None = (
+    int(os.getenv("TELEGRAM_TOPIC_LIKES_ID")) if os.getenv("TELEGRAM_TOPIC_LIKES_ID") else None
+)
+TELEGRAM_TOPIC_FAVORITES_ID: int | None = (
+    int(os.getenv("TELEGRAM_TOPIC_FAVORITES_ID"))
+    if os.getenv("TELEGRAM_TOPIC_FAVORITES_ID")
+    else None
+)
+TELEGRAM_TOPIC_DELETED_ID: int | None = (
+    int(os.getenv("TELEGRAM_TOPIC_DELETED_ID")) if os.getenv("TELEGRAM_TOPIC_DELETED_ID") else None
+)
+DELETE_LOCAL_AFTER_UPLOAD: bool = os.getenv("DELETE_LOCAL_AFTER_UPLOAD", "true").lower() == "true"
 
 # Настройки проверки доступности
 CHECK_INTERVAL_DAYS: int = int(os.getenv("CHECK_INTERVAL_DAYS", "7"))

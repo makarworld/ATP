@@ -5,4 +5,5 @@ services:
     volumes:
       - ./config:/config
       - ./downloads:/downloads
+      - ./atp:/app/atp
     restart: unless-stopped

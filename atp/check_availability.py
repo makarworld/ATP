@@ -14,7 +14,7 @@ from atp.database import get_db_session
 from atp.media import generate_bmp, get_file_size, split_video, temp_files_cleanup
 from atp.models import Video, VideoStatus
 from atp.settings import CHECK_INTERVAL_DAYS
-from atp.telegram import edit_media, send_media
+from atp.telegram import edit_media, get_or_create_topic, get_video_caption, send_media
 from atp.tiktok import check_video_availability
 
 logger = logging.getLogger(__name__)
@@ -109,34 +109,67 @@ def _handle_unavailable(db: Session, video: Video) -> bool:
     logger.info("Video %s is no longer available!", video.id)
 
     video_path = Path(settings.DOWNLOADS_DIR) / f"{video.id}.mp4"
-    if not video_path.exists():
-        logger.error("Video file not found: %s", video_path)
-        return False
 
     try:
-        caption = _get_caption(video)
+        deleted_thread_id = None
+        if settings.TELEGRAM_TOPICS_MODE:
+            deleted_thread_id = get_or_create_topic(
+                "Удаленные", "TELEGRAM_TOPIC_DELETED_ID", "TELEGRAM_TOPIC_DELETED_ID"
+            )
 
-        video_len = get_file_size(video_path)
-        if video_len > settings.TELEGRAM_MAX_VIDEO_SIZE:
-            parts = math.ceil(video_len / (settings.TELEGRAM_MAX_VIDEO_SIZE * 0.9))
-            parts = max(2, min(10, parts))  # от 2 до 10 частей
+        caption = "❗️ Видео удалено из TikTok!\n\n" + get_video_caption(video)
+        msg_id = None
 
-            logger.info("Video %s is too large, splitting it into %s parts", video.id, parts)
-            video_parts = split_video(video_path, parts)
-            if not video_parts:
-                logger.error(
-                    "Failed to split video. This should never happen. Create a GitHub issue"
+        if settings.TELEGRAM_TOPICS_MODE and video.tg_file_id:
+            # Мгновенная отправка по сохранённому file_id без локального файла
+            res = send_media(
+                caption=caption,
+                video=video.tg_file_id,
+                message_thread_id=deleted_thread_id,
+            )
+            msg_id = res.get("message_id")
+            logger.info(
+                "Deleted video %s notification sent using tg_file_id (msg_id: %s)",
+                video.id,
+                msg_id,
+            )
+        elif video_path.exists():
+            video_len = get_file_size(video_path)
+            if video_len > settings.TELEGRAM_MAX_VIDEO_SIZE:
+                parts = math.ceil(video_len / (settings.TELEGRAM_MAX_VIDEO_SIZE * 0.9))
+                parts = max(2, min(10, parts))  # от 2 до 10 частей
+
+                logger.info("Video %s is too large, splitting it into %s parts", video.id, parts)
+                video_parts = split_video(video_path, parts)
+                if not video_parts:
+                    logger.error(
+                        "Failed to split video. This should never happen. Create a GitHub issue"
+                    )
+                    return False
+                msg_id = _send_multipart_video(video_parts, caption)
+            else:
+                with open(video_path, "rb") as video_file:
+                    video_data = io.BytesIO(video_file.read())
+                result = send_media(
+                    caption=caption,
+                    video=video_data,
+                    message_thread_id=deleted_thread_id,
                 )
-                return False
-            msg_id = _send_multipart_video(video_parts, caption)
+                msg_id = result.get("message_id")
+                if result.get("video") and not video.tg_file_id:
+                    video.tg_file_id = result["video"]["file_id"]
+                logger.info("Telegram notification sent successfully.")
         else:
-            with open(video_path, "rb") as video_file:
-                video_data = io.BytesIO(video_file.read())
-            result = send_media(caption=caption, video=video_data)
-            msg_id = result["message_id"]
-            logger.info("Telegram notification sent successfully.")
+            logger.error("Video file not found and no tg_file_id: %s", video.id)
+            return False
 
-        return crud.update_video(db, video=video, message_id=msg_id, status=VideoStatus.DELETED)
+        return crud.update_video(
+            db,
+            video=video,
+            message_id=msg_id,
+            tg_deleted_msg_id=msg_id,
+            status=VideoStatus.DELETED,
+        )
     except Exception as e:
         logger.exception("Exception occurred while sending Telegram notification: %s", e)
         return False

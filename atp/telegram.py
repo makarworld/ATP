@@ -1,6 +1,8 @@
+import contextlib
 import io
 import json
 import logging
+import time
 
 import requests
 
@@ -9,16 +11,127 @@ from atp import settings
 logger = logging.getLogger(__name__)
 
 
+def _post_with_retry(
+    url: str,
+    data: dict,
+    files: dict | None = None,
+    timeout: int = 180,
+    max_retries: int = 5,
+) -> requests.Response:
+    """Выполняет POST запрос к Telegram API с обработкой rate limit (429) и повторами."""
+    for attempt in range(max_retries):
+        try:
+            if files:
+                for f in files.values():
+                    if hasattr(f, "seek"):
+                        f.seek(0)
+                response = requests.post(url, data=data, files=files, timeout=timeout)
+            else:
+                response = requests.post(url, data=data, timeout=timeout)
+
+            if response.status_code == 429:
+                retry_after = 5
+                with contextlib.suppress(Exception):
+                    retry_after = int(response.json().get("parameters", {}).get("retry_after", 5))
+                logger.warning(
+                    "Telegram rate limit (429). Sleeping %s s before retry...", retry_after
+                )
+                time.sleep(retry_after + 1)
+                continue
+
+            if response.status_code != 200:
+                raise Exception(f"Failed to send Telegram media: {response.text}")
+
+            return response
+        except requests.RequestException as e:
+            if attempt == max_retries - 1:
+                raise
+            logger.warning(
+                "Network error sending to Telegram (attempt %s/%s): %s",
+                attempt + 1,
+                max_retries,
+                e,
+            )
+            time.sleep(3)
+    raise Exception("Max retries exceeded sending to Telegram")
+
+
+def create_forum_topic(chat_id: str | int, name: str) -> int | None:
+    """Создаёт топик форума в супергруппе и возвращает message_thread_id.
+
+    :param chat_id: ID чата/супергруппы
+    :param name: Название топика
+    :return: message_thread_id или None
+    """
+    if not settings.TELEGRAM_BOT_TOKEN:
+        return None
+    url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/createForumTopic"
+    try:
+        r = requests.post(url, json={"chat_id": chat_id, "name": name}, timeout=30)
+        data = r.json()
+        if data.get("ok"):
+            topic_id = data["result"]["message_thread_id"]
+            logger.info("Created forum topic '%s' with ID %s", name, topic_id)
+            return topic_id
+        logger.error("Failed to create forum topic '%s': %s", name, data.get("description"))
+        return None
+    except Exception as e:
+        logger.exception("Error creating forum topic '%s': %s", name, e)
+        return None
+
+
+def get_or_create_topic(topic_name: str, config_attr: str, config_key: str) -> int | None:
+    """Возвращает ID топика из настроек или создаёт новый через createForumTopic.
+
+    :param topic_name: Название топика
+    :param config_attr: Имя атрибута в settings (например, TELEGRAM_TOPIC_LIKES_ID)
+    :param config_key: Имя ключа в settings.conf (например, TELEGRAM_TOPIC_LIKES_ID)
+    :return: ID топика (message_thread_id) или None
+    """
+    topic_id = getattr(settings, config_attr, None)
+    if topic_id:
+        return int(topic_id)
+
+    if not settings.TELEGRAM_CHAT_ID:
+        return None
+
+    new_id = create_forum_topic(settings.TELEGRAM_CHAT_ID, topic_name)
+    if new_id:
+        setattr(settings, config_attr, new_id)
+        settings.set_config_value(config_key, str(new_id))
+        return new_id
+    return None
+
+
+def get_video_caption(video) -> str:
+    """Возвращает описание видео с датой и ссылкой на TikTok, ограничив 1024 символами."""
+    MAX_LENGTH = 1024
+    author = f"👤 {video.author}\n" if video.author else ""
+    link = f"🔗 https://www.tiktok.com/@/video/{video.id}\n"
+    date_str = f"📅 {video.date.strftime('%d.%m.%Y')}\n" if getattr(video, "date", None) else ""
+    cut_name = video.name or ""
+
+    fixed_len = len(author) + len(link) + len(date_str)
+    if fixed_len + len(cut_name) > MAX_LENGTH:
+        diff = (fixed_len + len(cut_name)) - MAX_LENGTH
+        cut_name = cut_name[: -diff - 3] + "..."
+
+    caption = f"{author}{cut_name}\n\n{date_str}{link}".strip()
+    return caption
+
+
 def send_media(
     caption: str,
-    video: io.BytesIO | None = None,
+    video: io.BytesIO | str | None = None,
     photos: list[io.BytesIO] | None = None,
+    message_thread_id: int | None = None,
 ) -> dict:
-    """Отправляет медиа в Telegram (видео или фото).
+    """Отправляет медиа в Telegram (видео, фото или существующий file_id).
 
     :param caption: Подпись к медиа
-    :param video: Путь к видео файлу (Path) или список путей для медиа-группы
+    :param video: BytesIO с видеофайлом ИЛИ строка с Telegram file_id
     :param photos: Список фото в виде BytesIO
+    :param message_thread_id: ID топика форума (message_thread_id)
     :return: Результат ответа от Telegram API (dict)
     :raises: Exception с текстом ответа при ошибке
     """
@@ -29,6 +142,20 @@ def send_media(
     chat_id = settings.TELEGRAM_CHAT_ID
 
     if video:
+        # Если передан file_id строкой — отправляем без загрузки файла
+        if isinstance(video, str):
+            url = f"{base_url}/sendVideo"
+            data = {
+                "chat_id": chat_id,
+                "video": video,
+                "caption": caption,
+                "supports_streaming": True,
+            }
+            if message_thread_id:
+                data["message_thread_id"] = message_thread_id
+            response = _post_with_retry(url, data=data, timeout=60)
+            return response.json()["result"]
+
         media_type = "video"
         media_items = [video]
     elif photos:
@@ -47,19 +174,19 @@ def send_media(
 
         media[0]["caption"] = caption
         data = {"chat_id": chat_id, "media": json.dumps(media)}
+        if message_thread_id:
+            data["message_thread_id"] = message_thread_id
         url = f"{base_url}/sendMediaGroup"
     else:
         files = {media_type: media_items[0]}
         data = {"chat_id": chat_id, "caption": caption}
         if media_type == "video":
             data["supports_streaming"] = True
+        if message_thread_id:
+            data["message_thread_id"] = message_thread_id
         url = f"{base_url}/send{media_type.capitalize()}"
 
-    response = requests.post(url, data=data, files=files, timeout=180)
-
-    if response.status_code != 200:
-        raise Exception(f"Failed to send Telegram media: {response.text}")
-
+    response = _post_with_retry(url, data=data, files=files, timeout=180)
     return response.json()["result"]
 
 

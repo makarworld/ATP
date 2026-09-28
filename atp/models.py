@@ -28,6 +28,10 @@ class VideoInfo:
     liked: bool | None = None
     saved: bool | None = None
     deleted_reason: str | None = None
+    tg_file_id: str | None = None
+    tg_likes_msg_id: int | None = None
+    tg_favs_msg_id: int | None = None
+    tg_deleted_msg_id: int | None = None
 
 
 class Video(Base):
@@ -43,6 +47,10 @@ class Video(Base):
     :ivar last_checked: Дата последней проверки доступности
     :ivar message_id: ID сообщения об удалении видео
     :ivar deleted_reason: Причина недоступности видео
+    :ivar tg_file_id: Telegram file_id выгруженного видео
+    :ivar tg_likes_msg_id: ID сообщения в топике All Likes
+    :ivar tg_favs_msg_id: ID сообщения в топике All Favorites
+    :ivar tg_deleted_msg_id: ID сообщения в топике Удаленные
     """
 
     __tablename__ = "videos"
@@ -59,6 +67,10 @@ class Video(Base):
     last_checked: datetime | None = Column(DateTime, nullable=True)
     message_id: int | None = Column(Integer, nullable=True)
     deleted_reason: str | None = Column(String, nullable=True)
+    tg_file_id: str | None = Column(String, nullable=True)
+    tg_likes_msg_id: int | None = Column(Integer, nullable=True)
+    tg_favs_msg_id: int | None = Column(Integer, nullable=True)
+    tg_deleted_msg_id: int | None = Column(Integer, nullable=True)
 
     def __repr__(self) -> str:
         """Строковое представление объекта Video.

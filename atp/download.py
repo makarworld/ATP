@@ -1,13 +1,119 @@
+import io
 import logging
+import os
+from pathlib import Path
 
-from atp import crud
+from atp import crud, settings
 from atp.check_availability import check_services_availability
 from atp.database import get_db_session
-from atp.models import VideoStatus
-from atp.settings import HOPE_MODE
+from atp.models import Video, VideoStatus
+from atp.settings import DOWNLOADS_DIR, HOPE_MODE
+from atp.telegram import get_or_create_topic, get_video_caption, send_media
 from atp.tiktok import download_video
 
 logger = logging.getLogger(__name__)
+
+
+def upload_video_to_topics(db, video: Video, video_path: Path) -> str | None:
+    """Выгружает видео в топики Telegram (All Likes / All Favorites).
+
+    При DELETE_LOCAL_AFTER_UPLOAD удаляет локальный файл после сохранения tg_file_id.
+    """
+    if (
+        not settings.TELEGRAM_TOPICS_MODE
+        or not settings.TELEGRAM_BOT_TOKEN
+        or not settings.TELEGRAM_CHAT_ID
+    ):
+        return None
+
+    likes_thread_id = get_or_create_topic(
+        "All Likes", "TELEGRAM_TOPIC_LIKES_ID", "TELEGRAM_TOPIC_LIKES_ID"
+    )
+    favs_thread_id = get_or_create_topic(
+        "All Favorites", "TELEGRAM_TOPIC_FAVORITES_ID", "TELEGRAM_TOPIC_FAVORITES_ID"
+    )
+
+    caption = get_video_caption(video)
+    tg_file_id = video.tg_file_id
+    likes_msg_id = video.tg_likes_msg_id
+    favs_msg_id = video.tg_favs_msg_id
+
+    # 1. Выгрузка в All Likes
+    if video.liked and not likes_msg_id:
+        try:
+            if tg_file_id:
+                res = send_media(
+                    caption=caption,
+                    video=tg_file_id,
+                    message_thread_id=likes_thread_id,
+                )
+            elif video_path.exists():
+                with open(video_path, "rb") as f:
+                    res = send_media(
+                        caption=caption,
+                        video=io.BytesIO(f.read()),
+                        message_thread_id=likes_thread_id,
+                    )
+            else:
+                res = None
+            if res:
+                likes_msg_id = res.get("message_id")
+                if not tg_file_id and res.get("video"):
+                    tg_file_id = res["video"]["file_id"]
+                logger.info("Uploaded video %s to 'All Likes' (msg_id: %s)", video.id, likes_msg_id)
+        except Exception as e:
+            logger.error("Failed to upload video %s to All Likes: %s", video.id, e)
+
+    # 2. Выгрузка в All Favorites
+    if video.saved and not favs_msg_id:
+        try:
+            if tg_file_id:
+                res = send_media(
+                    caption=caption,
+                    video=tg_file_id,
+                    message_thread_id=favs_thread_id,
+                )
+            elif video_path.exists():
+                with open(video_path, "rb") as f:
+                    res = send_media(
+                        caption=caption,
+                        video=io.BytesIO(f.read()),
+                        message_thread_id=favs_thread_id,
+                    )
+            else:
+                res = None
+            if res:
+                favs_msg_id = res.get("message_id")
+                if not tg_file_id and res.get("video"):
+                    tg_file_id = res["video"]["file_id"]
+                logger.info(
+                    "Uploaded video %s to 'All Favorites' (msg_id: %s)", video.id, favs_msg_id
+                )
+        except Exception as e:
+            logger.error("Failed to upload video %s to All Favorites: %s", video.id, e)
+
+    # Сохраняем в БД
+    crud.update_video(
+        db,
+        video=video,
+        tg_file_id=tg_file_id,
+        tg_likes_msg_id=likes_msg_id,
+        tg_favs_msg_id=favs_msg_id,
+        update_last_checked=False,
+    )
+
+    # Если включено удаление локального файла и файл успешно выгружен
+    if settings.DELETE_LOCAL_AFTER_UPLOAD and tg_file_id and video_path.exists():
+        try:
+            os.remove(video_path)
+            logger.info(
+                "Deleted local file %s to save disk space (tg_file_id saved)",
+                video_path.name,
+            )
+        except Exception as e:
+            logger.warning("Failed to delete local file %s: %s", video_path, e)
+
+    return tg_file_id
 
 
 def download_new_videos() -> None:
@@ -17,6 +123,23 @@ def download_new_videos() -> None:
     try:
         if not check_services_availability():
             return
+
+        # Если включен режим топиков, сначала выгрузим уже скачанные локальные видео без file_id
+        if settings.TELEGRAM_TOPICS_MODE:
+            pending_upload = (
+                db.query(Video)
+                .filter(Video.status == VideoStatus.SUCCESS, Video.tg_file_id.is_(None))
+                .all()
+            )
+            if pending_upload:
+                logger.info(
+                    "Found %s downloaded videos pending Telegram upload",
+                    len(pending_upload),
+                )
+                for v in pending_upload:
+                    v_path = Path(DOWNLOADS_DIR) / f"{v.id}.mp4"
+                    if v_path.exists():
+                        upload_video_to_topics(db, v, v_path)
 
         videos = crud.get_videos(db, status=[VideoStatus.NEW])
         if HOPE_MODE:
@@ -50,6 +173,9 @@ def download_new_videos() -> None:
             if success:
                 success_count += 1
                 logger.info("Successfully downloaded video %s", video.id)
+                if settings.TELEGRAM_TOPICS_MODE:
+                    video_path = Path(DOWNLOADS_DIR) / f"{video.id}.mp4"
+                    upload_video_to_topics(db, video, video_path)
             else:
                 logger.warning("Failed to download video %s", video.id)
 
