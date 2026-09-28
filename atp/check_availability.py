@@ -14,7 +14,13 @@ from atp.database import get_db_session
 from atp.media import generate_bmp, get_file_size, split_video, temp_files_cleanup
 from atp.models import Video, VideoStatus
 from atp.settings import CHECK_INTERVAL_DAYS
-from atp.telegram import edit_media, get_or_create_topic, get_video_caption, send_media
+from atp.telegram import (
+    edit_media,
+    get_or_create_topic,
+    get_video_caption,
+    send_media,
+    update_topic_info,
+)
 from atp.tiktok import check_video_availability
 
 logger = logging.getLogger(__name__)
@@ -245,6 +251,10 @@ def check_video_batch() -> None:
         logger.info("Checked %s videos", len(videos))
         logger.info("Found %s unavailable videos", unavailable_count)
         logger.info("Found %s restored videos", restored_count)
+
+        # Обновляем info-сообщения в топиках
+        if settings.TELEGRAM_TOPICS_MODE and (unavailable_count > 0 or restored_count > 0):
+            update_topic_info(crud.get_stats(db))
 
     except Exception as e:
         logger.exception("Error checking videos: %s", e)

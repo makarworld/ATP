@@ -1,8 +1,9 @@
 from datetime import datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from atp.models import Video, VideoInfo
+from atp.models import Video, VideoInfo, VideoStatus
 
 
 def add_video_to_db(
@@ -106,3 +107,61 @@ def update_video(
         video.last_checked = datetime.now()
     db.commit()
     return True
+
+
+def get_stats(db: Session) -> dict:
+    """Собирает статистику по видео для info-сообщений в топиках.
+
+    :return: Словарь со счётчиками
+    """
+    total = db.query(func.count(Video.id)).scalar()
+    total_liked = db.query(func.count(Video.id)).filter(Video.liked.is_(True)).scalar()
+    total_saved = db.query(func.count(Video.id)).filter(Video.saved.is_(True)).scalar()
+
+    downloaded = (
+        db.query(func.count(Video.id))
+        .filter(Video.status.in_([VideoStatus.SUCCESS, VideoStatus.DELETED]))
+        .scalar()
+    )
+    uploaded_likes = (
+        db.query(func.count(Video.id))
+        .filter(Video.liked.is_(True), Video.tg_likes_msg_id.isnot(None))
+        .scalar()
+    )
+    uploaded_favs = (
+        db.query(func.count(Video.id))
+        .filter(Video.saved.is_(True), Video.tg_favs_msg_id.isnot(None))
+        .scalar()
+    )
+
+    deleted = db.query(func.count(Video.id)).filter(Video.status == VideoStatus.DELETED).scalar()
+    deleted_saved = (
+        db.query(func.count(Video.id))
+        .filter(Video.status == VideoStatus.DELETED, Video.tg_deleted_msg_id.isnot(None))
+        .scalar()
+    )
+    # Восстановленные = видео у которых есть message_id (было удалено) но статус SUCCESS
+    restored = (
+        db.query(func.count(Video.id))
+        .filter(Video.status == VideoStatus.SUCCESS, Video.message_id.isnot(None))
+        .scalar()
+    )
+
+    failed = db.query(func.count(Video.id)).filter(Video.status == VideoStatus.FAILED).scalar()
+    new = db.query(func.count(Video.id)).filter(Video.status == VideoStatus.NEW).scalar()
+    with_file_id = db.query(func.count(Video.id)).filter(Video.tg_file_id.isnot(None)).scalar()
+
+    return {
+        "total": total,
+        "total_liked": total_liked,
+        "total_saved": total_saved,
+        "downloaded": downloaded,
+        "uploaded_likes": uploaded_likes,
+        "uploaded_favs": uploaded_favs,
+        "deleted": deleted,
+        "deleted_saved": deleted_saved,
+        "restored": restored,
+        "failed": failed,
+        "new": new,
+        "with_file_id": with_file_id,
+    }

@@ -371,6 +371,23 @@ TELEGRAM_TOPIC_DELETED_ID: int | None = (
 )
 DELETE_LOCAL_AFTER_UPLOAD: bool = os.getenv("DELETE_LOCAL_AFTER_UPLOAD", "true").lower() == "true"
 
+# ID закреплённых info-сообщений в топиках (заполняются автоматически)
+TELEGRAM_INFO_MSG_LIKES_ID: int | None = (
+    int(os.getenv("TELEGRAM_INFO_MSG_LIKES_ID"))
+    if os.getenv("TELEGRAM_INFO_MSG_LIKES_ID")
+    else None
+)
+TELEGRAM_INFO_MSG_FAVORITES_ID: int | None = (
+    int(os.getenv("TELEGRAM_INFO_MSG_FAVORITES_ID"))
+    if os.getenv("TELEGRAM_INFO_MSG_FAVORITES_ID")
+    else None
+)
+TELEGRAM_INFO_MSG_DELETED_ID: int | None = (
+    int(os.getenv("TELEGRAM_INFO_MSG_DELETED_ID"))
+    if os.getenv("TELEGRAM_INFO_MSG_DELETED_ID")
+    else None
+)
+
 # Настройки проверки доступности
 CHECK_INTERVAL_DAYS: int = int(os.getenv("CHECK_INTERVAL_DAYS", "7"))
 

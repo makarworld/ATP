@@ -297,3 +297,148 @@ def discover_chat_id() -> None:
         logger.exception("Error occurred while getting Telegram chat ID: %s", e)
         settings.TELEGRAM_CHAT_ID = None
         settings.set_config_value("TELEGRAM_CHAT_ID", "")
+
+
+def _send_or_edit_info_msg(
+    text: str,
+    thread_id: int | None,
+    msg_id_attr: str,
+    msg_id_key: str,
+) -> None:
+    """Отправляет или обновляет закреплённое info-сообщение в топике.
+
+    :param text: HTML текст сообщения
+    :param thread_id: message_thread_id топика
+    :param msg_id_attr: Имя атрибута в settings для хранения message_id
+    :param msg_id_key: Имя ключа в settings.conf
+    """
+    if not settings.TELEGRAM_BOT_TOKEN or not settings.TELEGRAM_CHAT_ID or not thread_id:
+        return
+
+    base_url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}"
+    chat_id = settings.TELEGRAM_CHAT_ID
+    existing_msg_id = getattr(settings, msg_id_attr, None)
+
+    if existing_msg_id:
+        # Пробуем обновить существующее сообщение
+        try:
+            r = requests.post(
+                f"{base_url}/editMessageText",
+                json={
+                    "chat_id": chat_id,
+                    "message_id": existing_msg_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                },
+                timeout=30,
+            )
+            if r.json().get("ok"):
+                return
+            logger.warning("Failed to edit info msg %s: %s", existing_msg_id, r.text)
+        except Exception as e:
+            logger.warning("Error editing info msg: %s", e)
+
+    # Создаём новое сообщение и закрепляем
+    try:
+        r = requests.post(
+            f"{base_url}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "message_thread_id": thread_id,
+                "text": text,
+                "parse_mode": "HTML",
+            },
+            timeout=30,
+        )
+        data = r.json()
+        if not data.get("ok"):
+            logger.error("Failed to send info msg: %s", data.get("description"))
+            return
+        new_msg_id = data["result"]["message_id"]
+
+        # Закрепляем
+        requests.post(
+            f"{base_url}/pinChatMessage",
+            json={
+                "chat_id": chat_id,
+                "message_id": new_msg_id,
+                "disable_notification": True,
+            },
+            timeout=30,
+        )
+
+        setattr(settings, msg_id_attr, new_msg_id)
+        settings.set_config_value(msg_id_key, str(new_msg_id))
+        logger.info("Created and pinned info msg %s in topic %s", new_msg_id, thread_id)
+    except Exception as e:
+        logger.exception("Error creating info msg: %s", e)
+
+
+def update_topic_info(stats: dict) -> None:
+    """Обновляет закреплённые info-сообщения во всех топиках.
+
+    :param stats: Словарь статистики из crud.get_stats()
+    """
+    if not settings.TELEGRAM_TOPICS_MODE:
+        return
+
+    # --- All Likes ---
+    likes_text = (
+        "📊 <b>Статистика — All Likes</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"❤️ Всего лайков: <b>{stats['total_liked']}</b>\n"
+        f"📤 Выгружено в Telegram: <b>{stats['uploaded_likes']}</b>\n"
+        f"⏳ Ожидает загрузки: <b>{stats['total_liked'] - stats['uploaded_likes']}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 Всего в базе: <b>{stats['total']}</b>\n"
+        f"💾 Сохранено file_id: <b>{stats['with_file_id']}</b>\n"
+        f"🗑 Удалено из TikTok: <b>{stats['deleted']}</b>\n"
+        f"♻️ Восстановлено: <b>{stats['restored']}</b>"
+    )
+    _send_or_edit_info_msg(
+        likes_text,
+        settings.TELEGRAM_TOPIC_LIKES_ID,
+        "TELEGRAM_INFO_MSG_LIKES_ID",
+        "TELEGRAM_INFO_MSG_LIKES_ID",
+    )
+
+    # --- All Favorites ---
+    favs_text = (
+        "📊 <b>Статистика — All Favorites</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"⭐ Всего избранных: <b>{stats['total_saved']}</b>\n"
+        f"📤 Выгружено в Telegram: <b>{stats['uploaded_favs']}</b>\n"
+        f"⏳ Ожидает загрузки: <b>{stats['total_saved'] - stats['uploaded_favs']}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 Всего в базе: <b>{stats['total']}</b>\n"
+        f"💾 Сохранено file_id: <b>{stats['with_file_id']}</b>\n"
+        f"🗑 Удалено из TikTok: <b>{stats['deleted']}</b>\n"
+        f"♻️ Восстановлено: <b>{stats['restored']}</b>"
+    )
+    _send_or_edit_info_msg(
+        favs_text,
+        settings.TELEGRAM_TOPIC_FAVORITES_ID,
+        "TELEGRAM_INFO_MSG_FAVORITES_ID",
+        "TELEGRAM_INFO_MSG_FAVORITES_ID",
+    )
+
+    # --- Удаленные ---
+    deleted_text = (
+        "📊 <b>Статистика — Удалённые</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🗑 Удалено из TikTok: <b>{stats['deleted']}</b>\n"
+        f"📤 Спасено в Telegram: <b>{stats['deleted_saved']}</b>\n"
+        f"♻️ Восстановлено после удаления: <b>{stats['restored']}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 Всего в базе: <b>{stats['total']}</b>\n"
+        f"❤️ Лайков: <b>{stats['total_liked']}</b>\n"
+        f"⭐ Избранных: <b>{stats['total_saved']}</b>\n"
+        f"❌ Не скачано: <b>{stats['failed']}</b> | "
+        f"🆕 В очереди: <b>{stats['new']}</b>"
+    )
+    _send_or_edit_info_msg(
+        deleted_text,
+        settings.TELEGRAM_TOPIC_DELETED_ID,
+        "TELEGRAM_INFO_MSG_DELETED_ID",
+        "TELEGRAM_INFO_MSG_DELETED_ID",
+    )

@@ -8,7 +8,7 @@ from atp.check_availability import check_services_availability
 from atp.database import get_db_session
 from atp.models import Video, VideoStatus
 from atp.settings import DOWNLOADS_DIR, HOPE_MODE
-from atp.telegram import get_or_create_topic, get_video_caption, send_media
+from atp.telegram import get_or_create_topic, get_video_caption, send_media, update_topic_info
 from atp.tiktok import download_video
 
 logger = logging.getLogger(__name__)
@@ -184,6 +184,10 @@ def download_new_videos() -> None:
             logger.info("%s videos with status `new` remaining", len(new_left))
         if HOPE_MODE:
             logger.info("Don't forget to disable HOPE_MODE in settings.conf!")
+
+        # Обновляем info-сообщения в топиках
+        if settings.TELEGRAM_TOPICS_MODE and success_count > 0:
+            update_topic_info(crud.get_stats(db))
 
     except Exception as e:
         logger.exception("Error downloading videos: %s", e)
