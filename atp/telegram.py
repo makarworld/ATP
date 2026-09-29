@@ -320,7 +320,6 @@ def _send_or_edit_info_msg(
     existing_msg_id = getattr(settings, msg_id_attr, None)
 
     if existing_msg_id:
-        # Пробуем обновить существующее сообщение
         try:
             r = requests.post(
                 f"{base_url}/editMessageText",
@@ -332,13 +331,31 @@ def _send_or_edit_info_msg(
                 },
                 timeout=30,
             )
-            if r.json().get("ok"):
+            data = r.json()
+            if data.get("ok"):
+                logger.debug(
+                    "Successfully edited info msg %s in topic %s", existing_msg_id, thread_id
+                )
                 return
-            logger.warning("Failed to edit info msg %s: %s", existing_msg_id, r.text)
-        except Exception as e:
-            logger.warning("Error editing info msg: %s", e)
 
-    # Создаём новое сообщение и закрепляем
+            desc = data.get("description", "")
+            # Если текст не изменился — сообщение уже актуально
+            if "message is not modified" in desc:
+                return
+
+            # Если ошибка НЕ о том, что сообщение удалено — не создаём дубликат
+            if "message to edit not found" not in desc and "MESSAGE_ID_INVALID" not in desc:
+                logger.warning("Could not edit info msg %s: %s", existing_msg_id, desc)
+                return
+
+            logger.info(
+                "Pinned info msg %s was removed in Telegram, recreating...", existing_msg_id
+            )
+        except Exception as e:
+            logger.warning("Error editing info msg %s: %s", existing_msg_id, e)
+            return
+
+    # Создаём новое сообщение и закрепляем ТОЛЬКО если старого нет или оно удалено
     try:
         r = requests.post(
             f"{base_url}/sendMessage",
@@ -356,7 +373,7 @@ def _send_or_edit_info_msg(
             return
         new_msg_id = data["result"]["message_id"]
 
-        # Закрепляем
+        # Закрепляем в топике
         requests.post(
             f"{base_url}/pinChatMessage",
             json={
