@@ -105,7 +105,7 @@ def get_or_create_topic(topic_name: str, config_attr: str, config_key: str) -> i
 
 def get_video_caption(video) -> str:
     """Возвращает описание видео с датой и ссылкой на TikTok, ограничив 1024 символами."""
-    MAX_LENGTH = 1024
+    MAX_LENGTH = 850
     author = f"👤 {video.author}\n" if video.author else ""
     link = f"🔗 https://www.tiktok.com/@/video/{video.id}\n"
     date_str = f"📅 {video.date.strftime('%d.%m.%Y')}\n" if getattr(video, "date", None) else ""
@@ -113,10 +113,12 @@ def get_video_caption(video) -> str:
 
     fixed_len = len(author) + len(link) + len(date_str)
     if fixed_len + len(cut_name) > MAX_LENGTH:
-        diff = (fixed_len + len(cut_name)) - MAX_LENGTH
-        cut_name = cut_name[: -diff - 3] + "..."
+        avail = max(0, MAX_LENGTH - fixed_len - 5)
+        cut_name = cut_name[:avail] + "..."
 
     caption = f"{author}{cut_name}\n\n{date_str}{link}".strip()
+    if len(caption) > 1000:
+        caption = caption[:990] + "..."
     return caption
 
 

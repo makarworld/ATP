@@ -48,12 +48,18 @@ def upload_video_to_topics(db, video: Video, video_path: Path) -> str | None:
                     message_thread_id=likes_thread_id,
                 )
             elif video_path.exists():
-                with open(video_path, "rb") as f:
-                    res = send_media(
-                        caption=caption,
-                        video=io.BytesIO(f.read()),
-                        message_thread_id=likes_thread_id,
+                if video_path.stat().st_size > settings.TELEGRAM_MAX_VIDEO_SIZE:
+                    logger.warning(
+                        "Video %s exceeds Telegram 50MB limit, skipping upload", video.id
                     )
+                    res = None
+                else:
+                    with open(video_path, "rb") as f:
+                        res = send_media(
+                            caption=caption,
+                            video=io.BytesIO(f.read()),
+                            message_thread_id=likes_thread_id,
+                        )
             else:
                 res = None
             if res:
@@ -74,12 +80,18 @@ def upload_video_to_topics(db, video: Video, video_path: Path) -> str | None:
                     message_thread_id=favs_thread_id,
                 )
             elif video_path.exists():
-                with open(video_path, "rb") as f:
-                    res = send_media(
-                        caption=caption,
-                        video=io.BytesIO(f.read()),
-                        message_thread_id=favs_thread_id,
+                if video_path.stat().st_size > settings.TELEGRAM_MAX_VIDEO_SIZE:
+                    logger.warning(
+                        "Video %s exceeds Telegram 50MB limit, skipping upload", video.id
                     )
+                    res = None
+                else:
+                    with open(video_path, "rb") as f:
+                        res = send_media(
+                            caption=caption,
+                            video=io.BytesIO(f.read()),
+                            message_thread_id=favs_thread_id,
+                        )
             else:
                 res = None
             if res:
