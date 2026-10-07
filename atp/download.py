@@ -136,6 +136,8 @@ def download_new_videos() -> None:
         if not check_services_availability():
             return
 
+        total_saved_this_round = 0
+
         # Если включен режим топиков, сначала выгрузим уже скачанные локальные видео без file_id
         if settings.TELEGRAM_TOPICS_MODE:
             pending_upload = (
@@ -151,7 +153,11 @@ def download_new_videos() -> None:
                 for v in pending_upload:
                     v_path = Path(DOWNLOADS_DIR) / f"{v.id}.mp4"
                     if v_path.exists():
-                        upload_video_to_topics(db, v, v_path)
+                        res = upload_video_to_topics(db, v, v_path)
+                        if res:
+                            total_saved_this_round += 1
+                            if total_saved_this_round % 10 == 0:
+                                update_topic_info(crud.get_stats(db))
 
         videos = crud.get_videos(db, status=[VideoStatus.NEW])
         if HOPE_MODE:
@@ -160,6 +166,12 @@ def download_new_videos() -> None:
             )
             videos.extend(crud.get_videos(db, status=[VideoStatus.FAILED]))
         if not videos:
+            if settings.TELEGRAM_TOPICS_MODE and total_saved_this_round > 0:
+                logger.info(
+                    "Updating topic info after saving backlog videos (%s saved)",
+                    total_saved_this_round,
+                )
+                update_topic_info(crud.get_stats(db))
             return
 
         logger.info("Found %s new%s videos", len(videos), " or failed" if HOPE_MODE else "")
@@ -187,7 +199,11 @@ def download_new_videos() -> None:
                 logger.info("Successfully downloaded video %s", video.id)
                 if settings.TELEGRAM_TOPICS_MODE:
                     video_path = Path(DOWNLOADS_DIR) / f"{video.id}.mp4"
-                    upload_video_to_topics(db, video, video_path)
+                    res = upload_video_to_topics(db, video, video_path)
+                    if res:
+                        total_saved_this_round += 1
+                        if total_saved_this_round % 10 == 0:
+                            update_topic_info(crud.get_stats(db))
             else:
                 logger.warning("Failed to download video %s", video.id)
 
@@ -197,8 +213,12 @@ def download_new_videos() -> None:
         if HOPE_MODE:
             logger.info("Don't forget to disable HOPE_MODE in settings.conf!")
 
-        # Обновляем info-сообщения в топиках
-        if settings.TELEGRAM_TOPICS_MODE and success_count > 0:
+        # Обновляем info-сообщения после сохранения последнего видео в круге
+        if settings.TELEGRAM_TOPICS_MODE and total_saved_this_round > 0:
+            logger.info(
+                "Updating topic info after saving last video in round (%s saved)",
+                total_saved_this_round,
+            )
             update_topic_info(crud.get_stats(db))
 
     except Exception as e:
